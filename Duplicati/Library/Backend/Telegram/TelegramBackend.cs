@@ -20,11 +20,12 @@ namespace Duplicati.Library.Backend
     public class Telegram : IStreamingBackend, IBackend
     {
         private const int MEBIBYTE_IN_BYTES = 1048576;
-
-        private static readonly InMemorySessionStore m_sessionStore = new InMemorySessionStore();
+        
         private static readonly string m_logTag = Log.LogTagFromType(typeof(Telegram));
-        private static readonly object m_lockObj = new object();
-        private static TelegramClient m_telegramClient;
+
+        private readonly object m_lockObj = new object();
+        private EncryptedFileSessionStore m_encSessionStore;
+        private TelegramClient m_telegramClient;
 
         private readonly int m_apiId;
         private readonly string m_apiHash;
@@ -33,6 +34,7 @@ namespace Duplicati.Library.Backend
         private readonly string m_channelName;
         private readonly string m_phoneNumber;
         private TLChannel m_channelCache;
+        private string m_phoneCodeHash;
 
         public Telegram()
         { }
@@ -89,19 +91,25 @@ namespace Duplicati.Library.Backend
                 throw new UserInformationException(Strings.NoChannelNameError, nameof(Strings.NoChannelNameError));
             }
 
-            InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber);
+            InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber, false);
         }
 
-        private static void InitializeTelegramClient(int apiId, string apiHash, string phoneNumber)
+        private void InitializeTelegramClient(int apiId, string apiHash, string phoneNumber, bool ensureEncryptedStore)
         {
+            if (ensureEncryptedStore && m_encSessionStore == null)
+            {
+                throw new InvalidOperationException("The encrypted session store was null");
+            }
+
+            var sessionStore = (ISessionStore)m_encSessionStore ?? new FakeSessionStore();
             var tmpTelegramClient = m_telegramClient;
-            m_telegramClient = new TelegramClient(apiId, apiHash, m_sessionStore, phoneNumber);
+            m_telegramClient = new TelegramClient(apiId, apiHash, sessionStore, phoneNumber);
             tmpTelegramClient?.Dispose();
         }
 
         public void Dispose()
         {
-            // Do not dispose m_telegramClient because of "session-based" authentication.
+            m_telegramClient?.Dispose();
         }
 
         public string DisplayName { get; } = Strings.DisplayName;
@@ -389,12 +397,10 @@ namespace Duplicati.Library.Backend
 
             try
             {
-                var phoneCodeHash = m_sessionStore.GetPhoneHash(m_phoneNumber);
-                if (phoneCodeHash == null)
+                if (m_phoneCodeHash == null)
                 {
                     EnsureConnected();
-                    phoneCodeHash = m_telegramClient.SendCodeRequestAsync(m_phoneNumber).GetAwaiter().GetResult();
-                    m_sessionStore.SetPhoneHash(m_phoneNumber, phoneCodeHash);
+                    m_phoneCodeHash = m_telegramClient.SendCodeRequestAsync(m_phoneNumber).GetAwaiter().GetResult();
                     m_telegramClient.Session.Save();
 
                     if (string.IsNullOrEmpty(m_authCode))
@@ -407,7 +413,7 @@ namespace Duplicati.Library.Backend
                     }
                 }
 
-                m_telegramClient.MakeAuthAsync(m_phoneNumber, phoneCodeHash, m_authCode).GetAwaiter().GetResult();
+                m_telegramClient.MakeAuthAsync(m_phoneNumber, m_phoneCodeHash, m_authCode).GetAwaiter().GetResult();
             }
             catch (CloudPasswordNeededException)
             {
@@ -422,7 +428,8 @@ namespace Duplicati.Library.Backend
                 m_telegramClient.MakeAuthWithPasswordAsync(passwordSetting, m_password).GetAwaiter().GetResult();
             }
 
-            m_telegramClient.Session.Save();
+            m_encSessionStore = new EncryptedFileSessionStore(m_authCode, m_telegramClient.Session);
+            InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber, true);
         }
 
         private void EnsureConnected(CancellationToken? cancelToken = null)
@@ -439,7 +446,7 @@ namespace Duplicati.Library.Backend
                 }
                 catch (Exception)
                 {
-                    InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber);
+                    InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber, false);
                     isConnected = false;
                 }
             }
@@ -451,7 +458,7 @@ namespace Duplicati.Library.Backend
             return isAuthorized;
         }
 
-        private static void SafeExecute(Action action, string actionName)
+        private void SafeExecute(Action action, string actionName)
         {
             lock (m_lockObj)
             {
@@ -486,7 +493,7 @@ namespace Duplicati.Library.Backend
             Log.WriteInformationMessage(m_logTag, nameof(Strings.DONE_EXECUTING), Strings.DONE_EXECUTING, actionName);
         }
 
-        private static T SafeExecute<T>(Func<T> func, string actionName)
+        private T SafeExecute<T>(Func<T> func, string actionName)
         {
             lock (m_lockObj)
             {
