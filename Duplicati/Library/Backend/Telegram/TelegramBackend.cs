@@ -19,9 +19,8 @@ namespace Duplicati.Library.Backend
 {
     public class Telegram : IStreamingBackend, IBackend
     {
-        private EncryptedFileSessionStore m_encSessionStore;
-        private readonly InMemorySessionStore m_inMemSessionStore;
         private TelegramClient m_telegramClient;
+        private readonly EncryptedFileSessionStore m_encSessionStore;
 
         private readonly object m_lockObj = new object();
 
@@ -32,8 +31,8 @@ namespace Duplicati.Library.Backend
         private readonly string m_channelName;
         private readonly string m_phoneNumber;
         private TLChannel m_channelCache;
-        private string m_phoneCodeHash;
 
+        private static string m_phoneCodeHash;
         private static readonly string m_logTag = Log.LogTagFromType(typeof(Telegram));
         private const int BYTES_IN_MEBIBYTE = 1048576;
 
@@ -92,19 +91,14 @@ namespace Duplicati.Library.Backend
                 throw new UserInformationException(Strings.NoChannelNameError, nameof(Strings.NoChannelNameError));
             }
 
-            m_inMemSessionStore = new InMemorySessionStore();
-            InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber, false);
+            m_encSessionStore = new EncryptedFileSessionStore($"{m_apiHash}_{m_apiId}");
+            InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber);
         }
 
-        private void InitializeTelegramClient(int apiId, string apiHash, string phoneNumber, bool ensureEncryptedStore)
+        private void InitializeTelegramClient(int apiId, string apiHash, string phoneNumber)
         {
-            if (ensureEncryptedStore && m_encSessionStore == null)
-            {
-                throw new InvalidOperationException("The encrypted session store was null");
-            }
-
             var tmpTelegramClient = m_telegramClient;
-            m_telegramClient = new TelegramClient(apiId, apiHash, GetSessionStore(), phoneNumber);
+            m_telegramClient = new TelegramClient(apiId, apiHash, m_encSessionStore, phoneNumber);
             tmpTelegramClient?.Dispose();
         }
 
@@ -397,12 +391,10 @@ namespace Duplicati.Library.Backend
 
             try
             {
-                var phoneCodeHash = GetSessionStore().GetPhoneHash(m_phoneNumber);
-                if (phoneCodeHash == null)
+                if (m_phoneCodeHash == null)
                 {
                     EnsureConnected();
-                    phoneCodeHash = m_telegramClient.SendCodeRequestAsync(m_phoneNumber).GetAwaiter().GetResult();
-                    GetSessionStore().SetPhoneHash(m_phoneNumber, phoneCodeHash);
+                    m_phoneCodeHash = m_telegramClient.SendCodeRequestAsync(m_phoneNumber).GetAwaiter().GetResult();
                     m_telegramClient.Session.Save();
 
                     if (string.IsNullOrEmpty(m_authCode))
@@ -413,7 +405,7 @@ namespace Duplicati.Library.Backend
                     throw new UserInformationException(Strings.WrongAuthCodeError, nameof(Strings.WrongAuthCodeError));
                 }
 
-                m_telegramClient.MakeAuthAsync(m_phoneNumber, phoneCodeHash, m_authCode).GetAwaiter().GetResult();
+                m_telegramClient.MakeAuthAsync(m_phoneNumber, m_phoneCodeHash, m_authCode).GetAwaiter().GetResult();
             }
             catch (CloudPasswordNeededException)
             {
@@ -446,7 +438,7 @@ namespace Duplicati.Library.Backend
                 }
                 catch (Exception)
                 {
-                    InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber, false);
+                    InitializeTelegramClient(m_apiId, m_apiHash, m_phoneNumber);
                     isConnected = false;
                 }
             }
@@ -456,11 +448,6 @@ namespace Duplicati.Library.Backend
         {
             var isAuthorized = m_telegramClient.IsUserAuthorized();
             return isAuthorized;
-        }
-
-        private IExtendedSessionStore GetSessionStore()
-        {
-            return (IExtendedSessionStore)m_encSessionStore ?? m_inMemSessionStore;
         }
 
         private void SafeExecute(Action action, string actionName)

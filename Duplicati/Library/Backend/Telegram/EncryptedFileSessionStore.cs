@@ -1,96 +1,67 @@
 ﻿using System;
 using System.IO;
-using System.Text;
-using SharpAESCrypt;
 using TLSharp.Core;
 
 namespace Duplicati.Library.Backend
 {
-    public class EncryptedFileSessionStore : IExtendedSessionStore
+    public class EncryptedFileSessionStore : ISessionStore
     {
-        private readonly string m_authCode;
+        private readonly string m_password;
 
-        public EncryptedFileSessionStore(string authCode, Session session)
+        public EncryptedFileSessionStore(string password)
         {
-            if (string.IsNullOrWhiteSpace(authCode))
+            if (string.IsNullOrWhiteSpace(password))
             {
-                throw new ArgumentNullException(nameof(authCode));
+                throw new ArgumentNullException(nameof(password));
             }
 
-            m_authCode = authCode;
-            Save(session);
+            m_password = password;
         }
 
 
         public void Save(Session session)
         {
-            var phoneNumber = session.TLUser.Phone;
-            var filePath = GetSessionFilePath(phoneNumber);
+            var sessionId = session.SessionUserId;
+            var filePath = GetSessionFilePath(sessionId);
             var sessionBytes = session.ToBytes();
 
-            WriteToEncryptedStorage(sessionBytes, filePath);
+            WriteToEncryptedStorage(sessionBytes, m_password, filePath);
         }
 
-        public Session Load(string phone)
+        public Session Load(string userId)
         {
-            var filePath = GetSessionFilePath(phone);
-            var sessionBytes = ReadFromEncryptedStorage(filePath);
+            var filePath = GetSessionFilePath(userId);
+            var sessionBytes = ReadFromEncryptedStorage(m_password, filePath);
 
-            return Session.FromBytes(sessionBytes, this, phone);
-        }
-
-        private static string GetSessionFilePath(string phoneNumber)
-        {
-            phoneNumber = phoneNumber.TrimStart('+');
-
-            var appData = Environment.SpecialFolder.LocalApplicationData;
-            var sessionFilePath = Path.Combine(Environment.GetFolderPath(appData), $"{phoneNumber}.dat");
-
-            return sessionFilePath;
-        }
-
-        private static string GetPhoneHashFilePath(string phoneNumber)
-        {
-            var sessionFilePath = GetSessionFilePath(phoneNumber);
-            sessionFilePath += ".ph";
-
-            return sessionFilePath;
-        }
-
-        public string GetPhoneHash(string phone)
-        {
-            var filePath = GetPhoneHashFilePath(phone);
-            var phoneHashBytes = ReadFromEncryptedStorage(filePath);
-            if (phoneHashBytes == null)
+            if (sessionBytes == null)
             {
                 return null;
             }
 
-            var phoneHash = Encoding.UTF8.GetString(phoneHashBytes);
-            return phoneHash;
+
+            return Session.FromBytes(sessionBytes, this, userId);
         }
 
-        public void SetPhoneHash(string phone, string phoneCodeHash)
+        private string GetSessionFilePath(string userId)
         {
-            var filePath = GetPhoneHashFilePath(phone);
-            var phoneCodeBytes = Encoding.UTF8.GetBytes(phoneCodeHash);
+            userId = userId.TrimStart('+');
 
-            WriteToEncryptedStorage(phoneCodeBytes, filePath);
+            var appData = Environment.SpecialFolder.LocalApplicationData;
+            var sessionFilePath = Path.Combine(Environment.GetFolderPath(appData), $"{userId}.dat");
+
+            return sessionFilePath;
         }
 
-        private void WriteToEncryptedStorage(byte[] bytesToWrite, string path)
+        private static void WriteToEncryptedStorage(byte[] bytesToWrite, string pass, string path)
         {
             using (var file = File.Open(path, FileMode.Create, FileAccess.Write))
+            using (var sessionMs = new MemoryStream(bytesToWrite))
             {
-                using (var sessionMs = new MemoryStream(bytesToWrite))
-                {
-                    var cryptoStream = new SharpAESCrypt.SharpAESCrypt(m_authCode, sessionMs, OperationMode.Encrypt);
-                    cryptoStream.CopyTo(file);
-                }
+                SharpAESCrypt.SharpAESCrypt.Encrypt(pass, sessionMs, file);
             }
         }
 
-        private byte[] ReadFromEncryptedStorage(string path)
+        private static byte[] ReadFromEncryptedStorage(string pass, string path)
         {
             if (File.Exists(path) == false)
             {
@@ -98,13 +69,10 @@ namespace Duplicati.Library.Backend
             }
 
             using (var file = File.Open(path, FileMode.Open, FileAccess.Read))
+            using (var sessionMs = new MemoryStream())
             {
-                using (var sessionMs = new MemoryStream())
-                {
-                    var cryptoStream = new SharpAESCrypt.SharpAESCrypt(m_authCode, file, OperationMode.Decrypt);
-                    cryptoStream.CopyTo(sessionMs);
-                    return sessionMs.ToArray();
-                }
+                SharpAESCrypt.SharpAESCrypt.Decrypt(pass, file, sessionMs);
+                return sessionMs.ToArray();
             }
         }
     }
