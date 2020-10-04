@@ -22,7 +22,7 @@ namespace Duplicati.Library.Backend
         private TelegramClient m_telegramClient;
         private readonly EncryptedFileSessionStore m_encSessionStore;
 
-        private readonly object m_lockObj = new object();
+        private static readonly object m_lockObj = new object();
 
         private readonly int m_apiId;
         private readonly string m_apiHash;
@@ -427,14 +427,24 @@ namespace Duplicati.Library.Backend
         private void EnsureConnected(CancellationToken? cancelToken = null)
         {
             var isConnected = false;
-
             while (isConnected == false)
             {
                 cancelToken?.ThrowIfCancellationRequested();
+                var innerCancelTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var innerCancelToken = innerCancelTokenSource.Token;
 
                 try
                 {
-                    isConnected = m_telegramClient.ConnectAsync().Wait(TimeSpan.FromSeconds(5));
+                    var connectTask = m_telegramClient.ConnectAsync(false, innerCancelToken);
+                    connectTask.Wait(cancelToken ?? default);
+                    isConnected = true;
+                }
+                catch (OperationCanceledException canceledException)
+                {
+                    if (canceledException.CancellationToken != innerCancelToken)
+                    {
+                        throw;
+                    }
                 }
                 catch (Exception)
                 {
@@ -450,7 +460,7 @@ namespace Duplicati.Library.Backend
             return isAuthorized;
         }
 
-        private void SafeExecute(Action action, string actionName)
+        private static void SafeExecute(Action action, string actionName)
         {
             lock (m_lockObj)
             {
@@ -485,7 +495,7 @@ namespace Duplicati.Library.Backend
             Log.WriteInformationMessage(m_logTag, nameof(Strings.DONE_EXECUTING), Strings.DONE_EXECUTING, actionName);
         }
 
-        private T SafeExecute<T>(Func<T> func, string actionName)
+        private static T SafeExecute<T>(Func<T> func, string actionName)
         {
             lock (m_lockObj)
             {
