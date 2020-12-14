@@ -114,7 +114,7 @@ namespace Duplicati.Library.Backend
                     var fileInfos = await ListChannelFileInfosAsync();
                     var result = fileInfos.Select(fi => fi.ToFileEntry());
                     return result;
-                }, nameof(List)).Result;
+                }, nameof(List)).GetAwaiter().GetResult();
         }
 
         public async Task PutAsync(string remotename, Stream stream, CancellationToken cancelToken)
@@ -157,7 +157,7 @@ namespace Duplicati.Library.Backend
         {
             StartActionAsync(async () =>
                 {
-                    var fileInfo = ListChannelFileInfosAsync().Result.First(fi => fi.Name == remotename);
+                    var fileInfo = ListChannelFileInfosAsync().GetAwaiter().GetResult().First(fi => fi.Name == remotename);
                     var fileLocation = fileInfo.ToFileLocation();
 
                     var limit = BYTES_IN_MEBIBYTE;
@@ -204,7 +204,7 @@ namespace Duplicati.Library.Backend
             StartActionAsync(async () =>
                 {
                     var channel = GetChannel();
-                    var fileInfo = ListChannelFileInfosAsync().Result.FirstOrDefault(fi => fi.Name == remotename);
+                    var fileInfo = ListChannelFileInfosAsync().GetAwaiter().GetResult().FirstOrDefault(fi => fi.Name == remotename);
                     if (fileInfo == null)
                     {
                         return;
@@ -315,14 +315,8 @@ namespace Duplicati.Library.Backend
             while (true)
             {
                 EnsureConnectedAsync().Wait();
-                var dialogsTask = m_telegramClient.GetUserDialogsAsync(lastDate);
-                var waitTask = Task.WhenAny(dialogsTask, Task.Delay(15000)).Result;
-                if (waitTask != dialogsTask as Task)
-                {
-                    throw new TimeoutException("Couldn't get user dialogs");
-                }
-
-                var dialogs = dialogsTask.Result;
+                var dialogs = Timeouter.TimeoutAsync(internalToken => m_telegramClient.GetUserDialogsAsync(lastDate, token: internalToken)).GetAwaiter().GetResult();
+                
                 var tlDialogs = dialogs as TLDialogs;
                 var tlDialogsSlice = dialogs as TLDialogsSlice;
 

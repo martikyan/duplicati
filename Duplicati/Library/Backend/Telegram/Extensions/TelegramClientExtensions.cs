@@ -31,7 +31,7 @@ namespace Duplicati.Library.Backend.Extensions
 
             cancelToken.ThrowIfCancellationRequested();
 
-            await client.ConnectAsync(false, cancelToken);
+            await Timeouter.TimeoutAsync(token => client.ConnectAsync(false, token), externalCancelToken: cancelToken);
 
             cancelToken.ThrowIfCancellationRequested();
 
